@@ -59,10 +59,53 @@ HTML = r"""<!DOCTYPE html>
       max-width: 1400px;
       margin: 0 auto;
       display: grid;
-      grid-template-rows: auto minmax(280px, 1fr);
+      grid-template-rows: auto auto minmax(280px, 1fr);
       gap: 14px;
       min-height: calc(100vh - 36px);
     }
+
+    .banner {
+      display: none;
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      color: #9a3412;
+      font-size: 0.86rem;
+      line-height: 1.45;
+      box-shadow: var(--shadow);
+    }
+
+    .banner.show { display: block; }
+    .banner code {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.82em;
+    }
+
+    .sync-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    .sync-pill .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #94a3b8;
+    }
+
+    .sync-pill.live .dot { background: #16a34a; }
+    .sync-pill.saving .dot { background: #ca8a04; }
+    .sync-pill.error .dot { background: #dc2626; }
+    .sync-pill.local .dot { background: #ea580c; }
 
     .panel {
       background: var(--panel);
@@ -391,7 +434,7 @@ HTML = r"""<!DOCTYPE html>
     }
 
     @media (max-width: 980px) {
-      .app { grid-template-rows: auto auto; }
+      .app { grid-template-rows: auto auto auto; }
       .bottom { grid-template-columns: 1fr; }
       .week-grid { min-width: 720px; }
     }
@@ -399,6 +442,8 @@ HTML = r"""<!DOCTYPE html>
 </head>
 <body>
   <div class="app">
+    <div class="banner" id="setup-banner"></div>
+
     <section class="panel" id="calendar-panel">
       <div class="panel-head">
         <div>
@@ -406,6 +451,7 @@ HTML = r"""<!DOCTYPE html>
           <p class="panel-sub" id="range-label">Two-week overview</p>
         </div>
         <div class="toolbar">
+          <span class="sync-pill local" id="sync-pill"><span class="dot"></span><span id="sync-text">Local only</span></span>
           <button type="button" class="ghost" id="btn-prev-week">Prev week</button>
           <button type="button" class="ghost" id="btn-today">This week</button>
           <button type="button" class="ghost" id="btn-next-week">Next week</button>
@@ -505,9 +551,14 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
   <script>
     (function () {
-      var STORAGE_KEY = "labmgmt_dashboard_v1";
+      var LOCAL_KEY = "labmgmt_dashboard_v1";
+      var DB_PATH = "labManagement/dashboard";
+      var SAVE_DEBOUNCE_MS = 400;
       var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
       var ROW_COUNT = 7;
       var EVENT_COLORS = [
@@ -531,6 +582,12 @@ HTML = r"""<!DOCTYPE html>
         admin: [],
         editEventId: null
       };
+
+      var dbRef = null;
+      var cloudEnabled = false;
+      var applyingRemote = false;
+      var saveTimer = null;
+      var lastWrittenJson = "";
 
       function uid() {
         return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
@@ -573,43 +630,192 @@ HTML = r"""<!DOCTYPE html>
         return rows;
       }
 
-      function loadState() {
-        try {
-          var raw = localStorage.getItem(STORAGE_KEY);
-          if (!raw) {
-            state.events = [];
-            state.research = emptyRows(ROW_COUNT);
-            state.admin = emptyRows(ROW_COUNT);
-            return;
-          }
-          var data = JSON.parse(raw);
-          state.events = Array.isArray(data.events) ? data.events : [];
-          state.research = Array.isArray(data.research) && data.research.length
+      function normalizePayload(data) {
+        data = data || {};
+        return {
+          events: Array.isArray(data.events) ? data.events : [],
+          research: Array.isArray(data.research) && data.research.length
             ? data.research
-            : emptyRows(ROW_COUNT);
-          state.admin = Array.isArray(data.admin) && data.admin.length
+            : emptyRows(ROW_COUNT),
+          admin: Array.isArray(data.admin) && data.admin.length
             ? data.admin
-            : emptyRows(ROW_COUNT);
-        } catch (e) {
-          state.events = [];
-          state.research = emptyRows(ROW_COUNT);
-          state.admin = emptyRows(ROW_COUNT);
+            : emptyRows(ROW_COUNT)
+        };
+      }
+
+      function payloadFromState() {
+        return {
+          events: state.events,
+          research: state.research,
+          admin: state.admin,
+          updatedAt: Date.now()
+        };
+      }
+
+      function setSync(mode, text) {
+        var pill = document.getElementById("sync-pill");
+        var label = document.getElementById("sync-text");
+        pill.className = "sync-pill " + mode;
+        label.textContent = text;
+      }
+
+      function flashStatus(statusId, text) {
+        if (!statusId) return;
+        var el = document.getElementById(statusId);
+        if (!el) return;
+        el.textContent = text || "";
+        clearTimeout(el._t);
+        if (text) {
+          el._t = setTimeout(function () { el.textContent = ""; }, 1200);
         }
       }
 
-      function saveState(statusId) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
-          events: state.events,
-          research: state.research,
-          admin: state.admin
-        }));
-        if (statusId) {
-          var el = document.getElementById(statusId);
-          if (el) {
-            el.textContent = "Saved";
-            clearTimeout(el._t);
-            el._t = setTimeout(function () { el.textContent = ""; }, 1200);
+      function readLocal() {
+        try {
+          var raw = localStorage.getItem(LOCAL_KEY);
+          if (!raw) return null;
+          return normalizePayload(JSON.parse(raw));
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function writeLocal(payload) {
+        try {
+          localStorage.setItem(LOCAL_KEY, JSON.stringify(payload));
+        } catch (e) {}
+      }
+
+      function hasTableContent(rows) {
+        if (!Array.isArray(rows)) return false;
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          if ((r.c0 || r.c1 || r.c2 || r.c3 || "").toString().trim()) return true;
+        }
+        return false;
+      }
+
+      function applyPayload(payload, statusId) {
+        var data = normalizePayload(payload);
+        state.events = data.events;
+        state.research = data.research;
+        state.admin = data.admin;
+        renderCalendar();
+        renderTable("research");
+        renderTable("admin");
+        writeLocal(data);
+        if (statusId) flashStatus(statusId, "Synced");
+      }
+
+      function isConfigReady(cfg) {
+        if (!cfg || typeof cfg !== "object") return false;
+        return !!(cfg.apiKey && cfg.databaseURL && cfg.projectId);
+      }
+
+      function showSetupBanner(msg) {
+        var el = document.getElementById("setup-banner");
+        el.innerHTML = msg;
+        el.classList.add("show");
+      }
+
+      function queueSave(statusId) {
+        if (applyingRemote) return;
+        var payload = payloadFromState();
+        writeLocal(payload);
+        if (!cloudEnabled || !dbRef) {
+          flashStatus(statusId, "Saved locally");
+          return;
+        }
+        setSync("saving", "Saving...");
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(function () {
+          var json = JSON.stringify(payload);
+          if (json === lastWrittenJson) {
+            setSync("live", "Live sync");
+            return;
           }
+          dbRef.set(payload)
+            .then(function () {
+              lastWrittenJson = json;
+              setSync("live", "Live sync");
+              flashStatus(statusId, "Saved");
+            })
+            .catch(function (err) {
+              console.error(err);
+              setSync("error", "Save failed");
+              flashStatus(statusId, "Save failed");
+            });
+        }, SAVE_DEBOUNCE_MS);
+      }
+
+      function initFirebase() {
+        var cfg = window.LAB_FIREBASE_CONFIG;
+        if (!isConfigReady(cfg)) {
+          setSync("local", "Local only");
+          showSetupBanner(
+            "Shared sync is not configured yet. Edit <code>firebase-config.js</code> with your Firebase Realtime Database settings, then reopen this page. Until then, data stays in this browser only."
+          );
+          return false;
+        }
+        try {
+          if (!firebase.apps.length) firebase.initializeApp(cfg);
+          dbRef = firebase.database().ref(DB_PATH);
+          cloudEnabled = true;
+          setSync("saving", "Connecting...");
+          dbRef.on("value", function (snap) {
+            var remote = snap.val();
+            if (!remote) {
+              var local = readLocal();
+              if (local && ((local.events && local.events.length) || hasTableContent(local.research) || hasTableContent(local.admin))) {
+                applyingRemote = true;
+                applyPayload(local);
+                applyingRemote = false;
+                dbRef.set(payloadFromState()).then(function () {
+                  lastWrittenJson = JSON.stringify(payloadFromState());
+                  setSync("live", "Live sync");
+                });
+              } else {
+                applyingRemote = true;
+                applyPayload(normalizePayload(null));
+                applyingRemote = false;
+                setSync("live", "Live sync");
+              }
+              return;
+            }
+            var normalized = normalizePayload(remote);
+            var remoteJson = JSON.stringify({
+              events: normalized.events,
+              research: normalized.research,
+              admin: normalized.admin
+            });
+            var localJson = JSON.stringify({
+              events: state.events,
+              research: state.research,
+              admin: state.admin
+            });
+            if (remoteJson === localJson) {
+              lastWrittenJson = JSON.stringify(payloadFromState());
+              setSync("live", "Live sync");
+              return;
+            }
+            applyingRemote = true;
+            applyPayload(normalized);
+            applyingRemote = false;
+            lastWrittenJson = JSON.stringify(payloadFromState());
+            setSync("live", "Live sync");
+          }, function (err) {
+            console.error(err);
+            setSync("error", "Sync error");
+            showSetupBanner(
+              "Could not connect to Firebase. Check Realtime Database rules (read/write allowed) and <code>firebase-config.js</code>."
+            );
+          });
+          return true;
+        } catch (e) {
+          console.error(e);
+          setSync("error", "Config error");
+          showSetupBanner("Firebase init failed. Check <code>firebase-config.js</code>.");
+          return false;
         }
       }
 
@@ -733,7 +939,7 @@ HTML = r"""<!DOCTYPE html>
 
       function persistTable(kind) {
         state[kind] = readTable(kind);
-        saveState(kind + "-status");
+        queueSave(kind + "-status");
       }
 
       function openModal(opts) {
@@ -829,7 +1035,7 @@ HTML = r"""<!DOCTYPE html>
           } else {
             state.events.push({ id: uid(), title: title, date: date, time: time, endTime: endTime, color: color });
           }
-          saveState("cal-status");
+          queueSave("cal-status");
           closeModal();
           renderCalendar();
         });
@@ -837,7 +1043,7 @@ HTML = r"""<!DOCTYPE html>
         document.getElementById("ev-delete").addEventListener("click", function () {
           if (!state.editEventId) return;
           state.events = state.events.filter(function (x) { return x.id !== state.editEventId; });
-          saveState("cal-status");
+          queueSave("cal-status");
           closeModal();
           renderCalendar();
         });
@@ -848,7 +1054,7 @@ HTML = r"""<!DOCTYPE html>
             persistTable(kind);
             state[kind].push({ c0: "", c1: "", c2: "", c3: "" });
             renderTable(kind);
-            saveState(kind + "-status");
+            queueSave(kind + "-status");
           });
         });
 
@@ -868,7 +1074,7 @@ HTML = r"""<!DOCTYPE html>
               state[kind].splice(idx, 1);
             }
             renderTable(kind);
-            saveState(kind + "-status");
+            queueSave(kind + "-status");
           });
         });
 
@@ -877,11 +1083,10 @@ HTML = r"""<!DOCTYPE html>
         });
       }
 
-      loadState();
-      renderCalendar();
-      renderTable("research");
-      renderTable("admin");
+      var local = readLocal();
+      applyPayload(local || normalizePayload(null));
       bindEvents();
+      initFirebase();
     })();
   </script>
 </body>
