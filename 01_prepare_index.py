@@ -485,8 +485,12 @@ HTML = r"""<!DOCTYPE html>
         <input id="ev-date" type="date" />
       </div>
       <div class="field">
-        <label for="ev-time">Time (optional)</label>
+        <label for="ev-time">Start time (optional)</label>
         <input id="ev-time" type="time" />
+      </div>
+      <div class="field">
+        <label for="ev-end-time">End time (optional)</label>
+        <input id="ev-end-time" type="time" />
       </div>
       <div class="field">
         <label>Background color</label>
@@ -617,6 +621,15 @@ HTML = r"""<!DOCTYPE html>
           });
       }
 
+      function formatTimeRange(start, end) {
+        start = start || "";
+        end = end || "";
+        if (start && end) return start + " - " + end;
+        if (start) return start;
+        if (end) return "~ " + end;
+        return "";
+      }
+
       function colorMeta(bg) {
         for (var i = 0; i < EVENT_COLORS.length; i++) {
           if (EVENT_COLORS[i].bg === bg) return EVENT_COLORS[i];
@@ -665,7 +678,8 @@ HTML = r"""<!DOCTYPE html>
               var ev = list[e];
               var cm = colorMeta(ev.color || DEFAULT_COLOR);
               html += '<button type="button" class="event-chip" data-edit-id="' + ev.id + '" style="background:' + cm.bg + ';color:' + cm.fg + '">';
-              if (ev.time) html += '<span class="time">' + ev.time + "</span>";
+              var timeLabel = formatTimeRange(ev.time, ev.endTime);
+              if (timeLabel) html += '<span class="time">' + timeLabel + "</span>";
               html += escapeHtml(ev.title || "(untitled)") + "</button>";
             }
             html += '<button type="button" class="day-add" data-add-date="' + iso + '">+ Add</button>';
@@ -728,6 +742,7 @@ HTML = r"""<!DOCTYPE html>
         document.getElementById("ev-title").value = opts.title || "";
         document.getElementById("ev-date").value = opts.date || toISODate(new Date());
         document.getElementById("ev-time").value = opts.time || "";
+        document.getElementById("ev-end-time").value = opts.endTime || "";
         renderColorGrid(opts.color || DEFAULT_COLOR);
         document.getElementById("ev-delete").hidden = !opts.id;
         var modal = document.getElementById("event-modal");
@@ -788,7 +803,12 @@ HTML = r"""<!DOCTYPE html>
           var title = document.getElementById("ev-title").value.trim();
           var date = document.getElementById("ev-date").value;
           var time = document.getElementById("ev-time").value;
+          var endTime = document.getElementById("ev-end-time").value;
           var color = document.getElementById("ev-color").value || DEFAULT_COLOR;
+          if (time && endTime && endTime < time) {
+            document.getElementById("ev-end-time").focus();
+            return;
+          }
           if (!title) {
             document.getElementById("ev-title").focus();
             return;
@@ -803,10 +823,11 @@ HTML = r"""<!DOCTYPE html>
               found.title = title;
               found.date = date;
               found.time = time;
+              found.endTime = endTime;
               found.color = color;
             }
           } else {
-            state.events.push({ id: uid(), title: title, date: date, time: time, color: color });
+            state.events.push({ id: uid(), title: title, date: date, time: time, endTime: endTime, color: color });
           }
           saveState("cal-status");
           closeModal();
