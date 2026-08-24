@@ -191,8 +191,8 @@
       border-radius: 6px;
       padding: 5px 7px;
       text-align: left;
-      background: var(--accent-soft);
-      color: #0f4a42;
+      background: #d7efe9;
+      color: #1f3f3a;
       font-size: 0.74rem;
       font-weight: 600;
       line-height: 1.25;
@@ -200,6 +200,30 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+
+    .color-swatch {
+      appearance: none;
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      padding: 0;
+      box-shadow: inset 0 0 0 1px rgba(19, 35, 44, 0.08);
+    }
+
+    .color-swatch:hover { filter: brightness(0.97); }
+
+    .color-swatch.selected {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 2px rgba(31, 122, 108, 0.25);
     }
 
     .event-chip .time {
@@ -455,6 +479,11 @@
         <label for="ev-time">Time (optional)</label>
         <input id="ev-time" type="time" />
       </div>
+      <div class="field">
+        <label>Background color</label>
+        <input type="hidden" id="ev-color" value="#d7efe9" />
+        <div class="color-grid" id="ev-color-grid" role="listbox" aria-label="Event color"></div>
+      </div>
       <div class="modal-actions">
         <button type="button" class="ghost" id="ev-cancel">Cancel</button>
         <button type="button" class="danger" id="ev-delete" hidden>Delete</button>
@@ -468,6 +497,19 @@
       var STORAGE_KEY = "labmgmt_dashboard_v1";
       var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
       var ROW_COUNT = 7;
+      var EVENT_COLORS = [
+        { bg: "#d7efe9", fg: "#1f3f3a" },
+        { bg: "#dceaf7", fg: "#243b53" },
+        { bg: "#e8e4f5", fg: "#3a3358" },
+        { bg: "#fce8de", fg: "#6a3b28" },
+        { bg: "#f7f1d4", fg: "#5c4d1f" },
+        { bg: "#f8e1e5", fg: "#6b2f3c" },
+        { bg: "#e2efd9", fg: "#35502a" },
+        { bg: "#e4e9ee", fg: "#33404a" },
+        { bg: "#f6e0d8", fg: "#6a372c" },
+        { bg: "#dde4f7", fg: "#2f3b63" }
+      ];
+      var DEFAULT_COLOR = EVENT_COLORS[0].bg;
 
       var state = {
         weekOffset: 0,
@@ -566,6 +608,25 @@
           });
       }
 
+      function colorMeta(bg) {
+        for (var i = 0; i < EVENT_COLORS.length; i++) {
+          if (EVENT_COLORS[i].bg === bg) return EVENT_COLORS[i];
+        }
+        return EVENT_COLORS[0];
+      }
+
+      function renderColorGrid(selected) {
+        var grid = document.getElementById("ev-color-grid");
+        var html = "";
+        for (var i = 0; i < EVENT_COLORS.length; i++) {
+          var c = EVENT_COLORS[i];
+          var sel = c.bg === selected ? " selected" : "";
+          html += '<button type="button" class="color-swatch' + sel + '" data-color="' + c.bg + '" style="background:' + c.bg + '" title="Color ' + (i + 1) + '" aria-label="Color ' + (i + 1) + '"></button>';
+        }
+        grid.innerHTML = html;
+        document.getElementById("ev-color").value = selected || DEFAULT_COLOR;
+      }
+
       function renderCalendar() {
         var root = document.getElementById("calendar-root");
         var base = addDays(startOfWeek(new Date()), state.weekOffset * 7);
@@ -593,7 +654,8 @@
             var list = eventsOn(iso);
             for (var e = 0; e < list.length; e++) {
               var ev = list[e];
-              html += '<button type="button" class="event-chip" data-edit-id="' + ev.id + '">';
+              var cm = colorMeta(ev.color || DEFAULT_COLOR);
+              html += '<button type="button" class="event-chip" data-edit-id="' + ev.id + '" style="background:' + cm.bg + ';color:' + cm.fg + '">';
               if (ev.time) html += '<span class="time">' + ev.time + "</span>";
               html += escapeHtml(ev.title || "(untitled)") + "</button>";
             }
@@ -657,6 +719,7 @@
         document.getElementById("ev-title").value = opts.title || "";
         document.getElementById("ev-date").value = opts.date || toISODate(new Date());
         document.getElementById("ev-time").value = opts.time || "";
+        renderColorGrid(opts.color || DEFAULT_COLOR);
         document.getElementById("ev-delete").hidden = !opts.id;
         var modal = document.getElementById("event-modal");
         modal.classList.add("open");
@@ -703,6 +766,11 @@
         });
 
         document.getElementById("ev-cancel").addEventListener("click", closeModal);
+        document.getElementById("ev-color-grid").addEventListener("click", function (e) {
+          var btn = e.target.closest("[data-color]");
+          if (!btn) return;
+          renderColorGrid(btn.getAttribute("data-color"));
+        });
         document.getElementById("event-modal").addEventListener("click", function (e) {
           if (e.target === e.currentTarget) closeModal();
         });
@@ -711,6 +779,7 @@
           var title = document.getElementById("ev-title").value.trim();
           var date = document.getElementById("ev-date").value;
           var time = document.getElementById("ev-time").value;
+          var color = document.getElementById("ev-color").value || DEFAULT_COLOR;
           if (!title) {
             document.getElementById("ev-title").focus();
             return;
@@ -725,9 +794,10 @@
               found.title = title;
               found.date = date;
               found.time = time;
+              found.color = color;
             }
           } else {
-            state.events.push({ id: uid(), title: title, date: date, time: time });
+            state.events.push({ id: uid(), title: title, date: date, time: time, color: color });
           }
           saveState("cal-status");
           closeModal();
