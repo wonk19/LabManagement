@@ -582,6 +582,8 @@ HTML = r"""<!DOCTYPE html>
   <script>
     (function () {
       var LOCAL_KEY = "labmgmt_dashboard_v1";
+      var GCAL_TOKEN_KEY = "labmgmt_gcal_token_v1";
+      var GCAL_EXPIRY_KEY = "labmgmt_gcal_token_expiry_v1";
       var DB_PATH = "labManagement/dashboard";
       var SAVE_DEBOUNCE_MS = 400;
       var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -877,6 +879,51 @@ HTML = r"""<!DOCTYPE html>
         return !!(gcalAccessToken && Date.now() < gcalTokenExpiresAt - 15000);
       }
 
+      function saveGcalToken(token, expiresAt) {
+        gcalAccessToken = token || "";
+        gcalTokenExpiresAt = Number(expiresAt) || 0;
+        try {
+          if (gcalAccessToken && gcalTokenExpiresAt > Date.now()) {
+            localStorage.setItem(GCAL_TOKEN_KEY, gcalAccessToken);
+            localStorage.setItem(GCAL_EXPIRY_KEY, String(gcalTokenExpiresAt));
+          } else {
+            localStorage.removeItem(GCAL_TOKEN_KEY);
+            localStorage.removeItem(GCAL_EXPIRY_KEY);
+          }
+        } catch (e) {}
+      }
+
+      function clearGcalToken() {
+        gcalAccessToken = "";
+        gcalTokenExpiresAt = 0;
+        try {
+          localStorage.removeItem(GCAL_TOKEN_KEY);
+          localStorage.removeItem(GCAL_EXPIRY_KEY);
+        } catch (e) {}
+      }
+
+      function restoreGcalToken() {
+        try {
+          var token = localStorage.getItem(GCAL_TOKEN_KEY) || "";
+          var expiry = Number(localStorage.getItem(GCAL_EXPIRY_KEY) || 0);
+          if (token && expiry && Date.now() < expiry - 15000) {
+            gcalAccessToken = token;
+            gcalTokenExpiresAt = expiry;
+            return true;
+          }
+        } catch (e) {}
+        clearGcalToken();
+        return false;
+      }
+
+      function applyGcalTokenResponse(resp) {
+        var token = (resp && resp.access_token) || "";
+        var expiresIn = Number((resp && resp.expires_in) || 3600);
+        saveGcalToken(token, Date.now() + expiresIn * 1000);
+        updateGcalButton();
+        return token;
+      }
+
       function updateGcalButton() {
         var btn = document.getElementById("btn-gcal");
         if (!btn) return;
@@ -900,6 +947,7 @@ HTML = r"""<!DOCTYPE html>
       }
 
       function initGcal() {
+        restoreGcalToken();
         updateGcalButton();
         if (!gcalConfigured()) return;
         if (!(window.google && google.accounts && google.accounts.oauth2)) {
@@ -921,11 +969,8 @@ HTML = r"""<!DOCTYPE html>
               updateGcalButton();
               return;
             }
-            gcalAccessToken = resp.access_token || "";
-            var expiresIn = Number(resp.expires_in || 3600);
-            gcalTokenExpiresAt = Date.now() + expiresIn * 1000;
+            applyGcalTokenResponse(resp);
             flashStatus("cal-status", "Google Calendar connected");
-            updateGcalButton();
           }
         });
         gcalReady = true;
@@ -952,10 +997,7 @@ HTML = r"""<!DOCTYPE html>
               updateGcalButton();
               return;
             }
-            gcalAccessToken = resp.access_token || "";
-            var expiresIn = Number(resp.expires_in || 3600);
-            gcalTokenExpiresAt = Date.now() + expiresIn * 1000;
-            updateGcalButton();
+            applyGcalTokenResponse(resp);
             resolve(gcalAccessToken);
           };
           gcalTokenClient.requestAccessToken({ prompt: promptValue || "" });
@@ -1005,8 +1047,7 @@ HTML = r"""<!DOCTYPE html>
             body: bodyObj ? JSON.stringify(bodyObj) : undefined
           }).then(function (res) {
             if (res.status === 401) {
-              gcalAccessToken = "";
-              gcalTokenExpiresAt = 0;
+              clearGcalToken();
               updateGcalButton();
               return ensureGcalToken().then(function (token2) {
                 return fetch("https://www.googleapis.com/calendar/v3/" + path, {
@@ -1242,8 +1283,7 @@ HTML = r"""<!DOCTYPE html>
           }
           if (gcalConnected()) {
             var oldToken = gcalAccessToken;
-            gcalAccessToken = "";
-            gcalTokenExpiresAt = 0;
+            clearGcalToken();
             try {
               if (window.google && google.accounts && google.accounts.oauth2 && oldToken) {
                 google.accounts.oauth2.revoke(oldToken);
