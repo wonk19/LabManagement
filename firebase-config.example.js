@@ -11,3 +11,15 @@ window.LAB_FIREBASE_CONFIG = {
   messagingSenderId: "YOUR_SENDER_ID",
   appId: "YOUR_APP_ID"
 };
+
+// Google Calendar sync (optional)
+// 1) Google Cloud Console > APIs & Services > enable Google Calendar API
+// 2) Create OAuth client ID (Application type: Web application)
+// 3) Authorized JavaScript origins:
+//    - https://wonk19.github.io
+//    - http://localhost (optional, local testing)
+// 4) Paste the client ID below into firebase-config.js
+window.LAB_GOOGLE_CALENDAR = {
+  clientId: "YOUR_OAUTH_WEB_CLIENT_ID.apps.googleusercontent.com",
+  timeZone: "Asia/Seoul"
+};

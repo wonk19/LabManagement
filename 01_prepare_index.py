@@ -107,6 +107,29 @@ HTML = r"""<!DOCTYPE html>
     .sync-pill.error .dot { background: #dc2626; }
     .sync-pill.local .dot { background: #ea580c; }
 
+    .gcal-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .gcal-pill.on {
+      border-color: #93c5a5;
+      background: #edf8f1;
+      color: #1f5c3a;
+    }
+    .gcal-pill:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
     .panel {
       background: var(--panel);
       border: 1px solid var(--panel-border);
@@ -452,6 +475,7 @@ HTML = r"""<!DOCTYPE html>
         </div>
         <div class="toolbar">
           <span class="sync-pill local" id="sync-pill"><span class="dot"></span><span id="sync-text">Local only</span></span>
+          <button type="button" class="gcal-pill" id="btn-gcal" title="Connect Google Calendar">Google Calendar: Off</button>
           <button type="button" class="ghost" id="btn-prev-week">Prev week</button>
           <button type="button" class="ghost" id="btn-today">This week</button>
           <button type="button" class="ghost" id="btn-next-week">Next week</button>
@@ -551,6 +575,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
   <script src="firebase-config.js"></script>
@@ -588,6 +613,10 @@ HTML = r"""<!DOCTYPE html>
       var applyingRemote = false;
       var saveTimer = null;
       var lastWrittenJson = "";
+      var gcalTokenClient = null;
+      var gcalAccessToken = "";
+      var gcalTokenExpiresAt = 0;
+      var gcalReady = false;
 
       function uid() {
         return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
@@ -633,7 +662,18 @@ HTML = r"""<!DOCTYPE html>
       function normalizePayload(data) {
         data = data || {};
         return {
-          events: Array.isArray(data.events) ? data.events : [],
+          events: Array.isArray(data.events) ? data.events.map(function (ev) {
+            ev = ev || {};
+            return {
+              id: ev.id != null ? String(ev.id) : uid(),
+              title: ev.title != null ? String(ev.title) : "",
+              date: ev.date != null ? String(ev.date) : "",
+              time: ev.time != null ? String(ev.time) : "",
+              endTime: ev.endTime != null ? String(ev.endTime) : "",
+              color: ev.color != null ? String(ev.color) : DEFAULT_COLOR,
+              gcalEventId: ev.gcalEventId != null ? String(ev.gcalEventId) : ""
+            };
+          }) : [],
           research: Array.isArray(data.research) && data.research.length
             ? data.research
             : emptyRows(ROW_COUNT),
@@ -819,6 +859,213 @@ HTML = r"""<!DOCTYPE html>
         }
       }
 
+      function gcalConfig() {
+        var c = window.LAB_GOOGLE_CALENDAR || {};
+        return {
+          clientId: String(c.clientId || "").trim(),
+          apiKey: String(c.apiKey || (window.LAB_FIREBASE_CONFIG && window.LAB_FIREBASE_CONFIG.apiKey) || "").trim(),
+          timeZone: String(c.timeZone || "Asia/Seoul").trim() || "Asia/Seoul"
+        };
+      }
+
+      function gcalConfigured() {
+        return !!gcalConfig().clientId;
+      }
+
+      function gcalConnected() {
+        return !!(gcalAccessToken && Date.now() < gcalTokenExpiresAt - 15000);
+      }
+
+      function updateGcalButton() {
+        var btn = document.getElementById("btn-gcal");
+        if (!btn) return;
+        if (!gcalConfigured()) {
+          btn.disabled = true;
+          btn.classList.remove("on");
+          btn.textContent = "Google Calendar: Setup needed";
+          btn.title = "Add LAB_GOOGLE_CALENDAR.clientId in firebase-config.js";
+          return;
+        }
+        btn.disabled = false;
+        if (gcalConnected()) {
+          btn.classList.add("on");
+          btn.textContent = "Google Calendar: On";
+          btn.title = "Click to disconnect this browser session";
+        } else {
+          btn.classList.remove("on");
+          btn.textContent = "Google Calendar: Off";
+          btn.title = "Connect to sync new/edited events to your Google Calendar";
+        }
+      }
+
+      function initGcal() {
+        updateGcalButton();
+        if (!gcalConfigured()) return;
+        if (!(window.google && google.accounts && google.accounts.oauth2)) {
+          setTimeout(initGcal, 250);
+          return;
+        }
+        if (gcalTokenClient) {
+          gcalReady = true;
+          updateGcalButton();
+          return;
+        }
+        gcalTokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: gcalConfig().clientId,
+          scope: "https://www.googleapis.com/auth/calendar.events",
+          callback: function (resp) {
+            if (resp && resp.error) {
+              console.error(resp);
+              flashStatus("cal-status", "Google auth failed");
+              updateGcalButton();
+              return;
+            }
+            gcalAccessToken = resp.access_token || "";
+            var expiresIn = Number(resp.expires_in || 3600);
+            gcalTokenExpiresAt = Date.now() + expiresIn * 1000;
+            flashStatus("cal-status", "Google Calendar connected");
+            updateGcalButton();
+          }
+        });
+        gcalReady = true;
+        updateGcalButton();
+      }
+
+      function requestGcalToken(promptValue) {
+        return new Promise(function (resolve, reject) {
+          if (!gcalConfigured()) {
+            reject(new Error("Google Calendar clientId is not configured"));
+            return;
+          }
+          if (!gcalTokenClient) {
+            reject(new Error("Google Identity script is not ready"));
+            return;
+          }
+          var prev = gcalTokenClient.callback;
+          gcalTokenClient.callback = function (resp) {
+            gcalTokenClient.callback = prev;
+            if (resp && resp.error) {
+              reject(new Error(resp.error));
+              updateGcalButton();
+              return;
+            }
+            gcalAccessToken = resp.access_token || "";
+            var expiresIn = Number(resp.expires_in || 3600);
+            gcalTokenExpiresAt = Date.now() + expiresIn * 1000;
+            updateGcalButton();
+            resolve(gcalAccessToken);
+          };
+          gcalTokenClient.requestAccessToken({ prompt: promptValue || "" });
+        });
+      }
+
+      function ensureGcalToken() {
+        if (gcalConnected()) return Promise.resolve(gcalAccessToken);
+        return requestGcalToken("");
+      }
+
+      function buildGcalBody(ev) {
+        var cfg = gcalConfig();
+        var body = {
+          summary: ev.title || "(no title)",
+          description: "Synced from Lab Management dashboard"
+        };
+        if (ev.time) {
+          var start = String(ev.date) + "T" + String(ev.time) + ":00";
+          var endT = ev.endTime || "";
+          if (!endT) {
+            var parts = String(ev.time).split(":");
+            var h = Number(parts[0] || 0) + 1;
+            var m = Number(parts[1] || 0);
+            if (h > 23) { h = 23; m = 59; }
+            endT = pad(h) + ":" + pad(m);
+          }
+          body.start = { dateTime: start, timeZone: cfg.timeZone };
+          body.end = { dateTime: String(ev.date) + "T" + endT + ":00", timeZone: cfg.timeZone };
+        } else {
+          var d0 = parseISODate(ev.date);
+          var d1 = d0 ? addDays(d0, 1) : null;
+          body.start = { date: ev.date };
+          body.end = { date: d1 ? toISODate(d1) : ev.date };
+        }
+        return body;
+      }
+
+      function gcalFetch(path, method, bodyObj) {
+        return ensureGcalToken().then(function (token) {
+          return fetch("https://www.googleapis.com/calendar/v3/" + path, {
+            method: method,
+            headers: {
+              Authorization: "Bearer " + token,
+              "Content-Type": "application/json"
+            },
+            body: bodyObj ? JSON.stringify(bodyObj) : undefined
+          }).then(function (res) {
+            if (res.status === 401) {
+              gcalAccessToken = "";
+              gcalTokenExpiresAt = 0;
+              updateGcalButton();
+              return ensureGcalToken().then(function (token2) {
+                return fetch("https://www.googleapis.com/calendar/v3/" + path, {
+                  method: method,
+                  headers: {
+                    Authorization: "Bearer " + token2,
+                    "Content-Type": "application/json"
+                  },
+                  body: bodyObj ? JSON.stringify(bodyObj) : undefined
+                });
+              });
+            }
+            return res;
+          });
+        }).then(function (res) {
+          if (!res.ok) {
+            return res.text().then(function (txt) {
+              throw new Error("Google Calendar API " + res.status + ": " + txt);
+            });
+          }
+          if (res.status === 204) return null;
+          return res.json();
+        });
+      }
+
+      function syncEventToGoogle(ev) {
+        if (!gcalConfigured() || !gcalConnected()) return Promise.resolve(null);
+        if (!ev) return Promise.resolve(null);
+        var body = buildGcalBody(ev);
+        var req;
+        if (ev.gcalEventId) {
+          req = gcalFetch("calendars/primary/events/" + encodeURIComponent(ev.gcalEventId), "PATCH", body);
+        } else {
+          req = gcalFetch("calendars/primary/events", "POST", body);
+        }
+        return req.then(function (data) {
+          if (data && data.id) {
+            ev.gcalEventId = data.id;
+            queueSave("cal-status");
+          }
+          return data;
+        }).catch(function (err) {
+          console.error(err);
+          flashStatus("cal-status", "Google sync failed");
+          return null;
+        });
+      }
+
+      function deleteEventFromGoogle(ev) {
+        if (!gcalConfigured() || !gcalConnected()) return Promise.resolve(null);
+        if (!ev || !ev.gcalEventId) return Promise.resolve(null);
+        return gcalFetch(
+          "calendars/primary/events/" + encodeURIComponent(ev.gcalEventId),
+          "DELETE",
+          null
+        ).catch(function (err) {
+          console.error(err);
+          flashStatus("cal-status", "Google delete failed");
+          return null;
+        });
+      }
+
       function eventsOn(iso) {
         return state.events
           .filter(function (ev) { return ev.date === iso; })
@@ -980,6 +1227,28 @@ HTML = r"""<!DOCTYPE html>
         document.getElementById("btn-add-event").addEventListener("click", function () {
           openModal({ date: toISODate(new Date()) });
         });
+        document.getElementById("btn-gcal").addEventListener("click", function () {
+          if (!gcalConfigured()) return;
+          if (gcalConnected()) {
+            var oldToken = gcalAccessToken;
+            gcalAccessToken = "";
+            gcalTokenExpiresAt = 0;
+            try {
+              if (window.google && google.accounts && google.accounts.oauth2 && oldToken) {
+                google.accounts.oauth2.revoke(oldToken);
+              }
+            } catch (err) {}
+            flashStatus("cal-status", "Google Calendar disconnected");
+            updateGcalButton();
+            return;
+          }
+          requestGcalToken("consent").then(function () {
+            flashStatus("cal-status", "Google Calendar connected");
+          }).catch(function (err) {
+            console.error(err);
+            flashStatus("cal-status", "Google connect failed");
+          });
+        });
 
         document.getElementById("calendar-root").addEventListener("click", function (e) {
           var editBtn = e.target.closest("[data-edit-id]");
@@ -1023,6 +1292,7 @@ HTML = r"""<!DOCTYPE html>
             document.getElementById("ev-date").focus();
             return;
           }
+          var savedEv = null;
           if (state.editEventId) {
             var found = state.events.find(function (x) { return x.id === state.editEventId; });
             if (found) {
@@ -1031,21 +1301,30 @@ HTML = r"""<!DOCTYPE html>
               found.time = time;
               found.endTime = endTime;
               found.color = color;
+              savedEv = found;
             }
           } else {
-            state.events.push({ id: uid(), title: title, date: date, time: time, endTime: endTime, color: color });
+            savedEv = { id: uid(), title: title, date: date, time: time, endTime: endTime, color: color, gcalEventId: "" };
+            state.events.push(savedEv);
           }
           queueSave("cal-status");
           closeModal();
           renderCalendar();
+          if (gcalConnected()) {
+            syncEventToGoogle(savedEv).then(function () {
+              renderCalendar();
+            });
+          }
         });
 
         document.getElementById("ev-delete").addEventListener("click", function () {
           if (!state.editEventId) return;
+          var removing = state.events.find(function (x) { return x.id === state.editEventId; });
           state.events = state.events.filter(function (x) { return x.id !== state.editEventId; });
           queueSave("cal-status");
           closeModal();
           renderCalendar();
+          if (removing) deleteEventFromGoogle(removing);
         });
 
         document.querySelectorAll("[data-add-row]").forEach(function (btn) {
@@ -1087,6 +1366,7 @@ HTML = r"""<!DOCTYPE html>
       applyPayload(local || normalizePayload(null));
       bindEvents();
       initFirebase();
+      initGcal();
     })();
   </script>
 </body>

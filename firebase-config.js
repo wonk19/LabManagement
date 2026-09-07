@@ -9,3 +9,8 @@ window.LAB_FIREBASE_CONFIG = {
   appId: "1:842295927800:web:0ffcffe75fe9fa7e372c0d",
   measurementId: "G-PEQ126ZFNP"
 };
+
+window.LAB_GOOGLE_CALENDAR = {
+  clientId: "",
+  timeZone: "Asia/Seoul"
+};
