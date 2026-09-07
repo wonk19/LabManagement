@@ -11,6 +11,6 @@ window.LAB_FIREBASE_CONFIG = {
 };
 
 window.LAB_GOOGLE_CALENDAR = {
-  clientId: "",
+  clientId: "48522766218-cbod570ed5irq3erdk03ia2lvldvev85.apps.googleusercontent.com",
   timeZone: "Asia/Seoul"
 };
