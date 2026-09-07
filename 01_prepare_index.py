@@ -699,14 +699,15 @@ HTML = r"""<!DOCTYPE html>
         label.textContent = text;
       }
 
-      function flashStatus(statusId, text) {
+      function flashStatus(statusId, text, ms) {
         if (!statusId) return;
         var el = document.getElementById(statusId);
         if (!el) return;
         el.textContent = text || "";
         clearTimeout(el._t);
         if (text) {
-          el._t = setTimeout(function () { el.textContent = ""; }, 1200);
+          var wait = ms != null ? ms : (/fail|error|Google:/i.test(String(text)) ? 8000 : 1200);
+          el._t = setTimeout(function () { el.textContent = ""; }, wait);
         }
       }
 
@@ -945,7 +946,9 @@ HTML = r"""<!DOCTYPE html>
           gcalTokenClient.callback = function (resp) {
             gcalTokenClient.callback = prev;
             if (resp && resp.error) {
-              reject(new Error(resp.error));
+              var detail = resp.error;
+              if (resp.error_description) detail += ": " + resp.error_description;
+              reject(new Error(detail));
               updateGcalButton();
               return;
             }
@@ -1228,7 +1231,15 @@ HTML = r"""<!DOCTYPE html>
           openModal({ date: toISODate(new Date()) });
         });
         document.getElementById("btn-gcal").addEventListener("click", function () {
-          if (!gcalConfigured()) return;
+          if (!gcalConfigured()) {
+            flashStatus("cal-status", "Missing Google clientId");
+            return;
+          }
+          if (!gcalTokenClient) {
+            initGcal();
+            flashStatus("cal-status", "Google script loading... try again");
+            return;
+          }
           if (gcalConnected()) {
             var oldToken = gcalAccessToken;
             gcalAccessToken = "";
@@ -1242,11 +1253,14 @@ HTML = r"""<!DOCTYPE html>
             updateGcalButton();
             return;
           }
+          flashStatus("cal-status", "Opening Google sign-in...");
           requestGcalToken("consent").then(function () {
             flashStatus("cal-status", "Google Calendar connected");
           }).catch(function (err) {
             console.error(err);
-            flashStatus("cal-status", "Google connect failed");
+            var msg = (err && err.message) ? String(err.message) : "connect failed";
+            if (msg.length > 80) msg = msg.slice(0, 80) + "...";
+            flashStatus("cal-status", "Google: " + msg);
           });
         });
 
